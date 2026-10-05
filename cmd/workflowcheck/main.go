@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,9 +26,11 @@ type apiResponse struct {
 }
 
 type harness struct {
-	baseURL string
-	client  *http.Client
-	server  *httptest.Server
+	baseURL   string
+	client    *http.Client
+	server    *httptest.Server
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func main() {
@@ -54,9 +57,13 @@ func main() {
 	fmt.Printf("workflow %s: ok\n", *workflow)
 }
 
-func checkRegisterDevice() error {
+func checkRegisterDevice() (err error) {
 	h := newHarness()
-	defer h.close()
+	defer func() {
+		if closeErr := h.close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	response, err := h.request(http.MethodPost, "/devices", map[string]any{
 		"asset_tag": " met-1001 ",
@@ -112,9 +119,13 @@ func checkRegisterDevice() error {
 	return expectErrorCode(duplicate, "duplicate_asset_tag")
 }
 
-func checkOpenVerificationCase() error {
+func checkOpenVerificationCase() (err error) {
 	h := newHarness()
-	defer h.close()
+	defer func() {
+		if closeErr := h.close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	deviceID, err := h.createDevice("MET-1101")
 	if err != nil {
@@ -159,9 +170,13 @@ func checkOpenVerificationCase() error {
 	return expectErrorCode(second, "active_case_exists")
 }
 
-func checkRecordMeasurement() error {
+func checkRecordMeasurement() (err error) {
 	h := newHarness()
-	defer h.close()
+	defer func() {
+		if closeErr := h.close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	deviceID, err := h.createDevice("MET-1201")
 	if err != nil {
@@ -244,9 +259,13 @@ func checkRecordMeasurement() error {
 	return nil
 }
 
-func checkReopenVerificationCase() error {
+func checkReopenVerificationCase() (err error) {
 	h := newHarness()
-	defer h.close()
+	defer func() {
+		if closeErr := h.close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	caseID, err := h.rejectedCase("MET-1301")
 	if err != nil {
@@ -304,9 +323,13 @@ func checkReopenVerificationCase() error {
 	return nil
 }
 
-func checkSealVerification() error {
+func checkSealVerification() (err error) {
 	h := newHarness()
-	defer h.close()
+	defer func() {
+		if closeErr := h.close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	caseID, err := h.readyCase("MET-1401")
 	if err != nil {
@@ -384,8 +407,26 @@ func newHarness() *harness {
 	}
 }
 
-func (h *harness) close() {
-	h.server.Close()
+// close releases the test server and the client's idle connections. The
+// release runs once; every call observes the same result, and a successful
+// release is confirmed by the listener refusing new connections.
+func (h *harness) close() error {
+	h.closeOnce.Do(func() {
+		h.client.CloseIdleConnections()
+		h.server.Close()
+		h.closeErr = h.verifyReleased()
+	})
+	return h.closeErr
+}
+
+func (h *harness) verifyReleased() error {
+	address := strings.TrimPrefix(h.baseURL, "http://")
+	connection, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		return nil
+	}
+	connection.Close()
+	return fmt.Errorf("server at %s still accepts connections after close", address)
 }
 
 func (h *harness) request(method, path string, body any) (apiResponse, error) {

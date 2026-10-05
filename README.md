@@ -13,6 +13,11 @@ go run ./cmd/metrology-service --addr 127.0.0.1:18121
 
 The service listens on `127.0.0.1:18121` by default.
 
+The process logs `listening on ...` only after the listen socket is bound, so
+a bind failure exits with code 1 before any readiness report. `SIGINT` and
+`SIGTERM` both trigger a graceful shutdown: in-flight requests finish, the
+socket is released, and the process exits with code 0.
+
 ## Build And Verify
 
 ```bash
